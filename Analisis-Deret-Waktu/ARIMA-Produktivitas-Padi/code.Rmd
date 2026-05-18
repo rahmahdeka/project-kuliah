@@ -1,0 +1,207 @@
+---
+title: "Untitled"
+author: "Vita Anggraini"
+date: "2026-05-12"
+output: html_document
+---
+
+```{r}
+library(readxl); library(forecast); library(tseries)
+library(ggplot2); library(dplyr)
+
+
+# ---- DATA ----
+df <- read_excel("C:/Users/Vita Anggraini/Downloads/Data Tanaman Padi Sumatera 1993-2025.xlsx",
+                 sheet = "Data Tanaman Padi Sumatera")
+
+provinsi_list <- unique(df$Provinsi)
+VAR           <- "Produksi"   # ganti ke "Luas Panen" jika perlu
+
+
+```
+
+
+```{r}
+# ---- FUNGSI UTAMA ----
+run_arima <- function(prov) {
+ 
+  cat("\n============================\n", prov, "\n============================\n")
+ 
+  d_prov <- df %>% filter(Provinsi == prov) %>% arrange(Tahun)
+  ts_raw <- ts(d_prov[[VAR]], start = min(d_prov$Tahun), frequency = 1)
+ 
+ 
+  # -- Bersihkan Outlier dengan tsclean --
+  ts_clean <- tsclean(ts_raw, replace.missing = TRUE)
+  n_outlier <- sum(round(ts_raw, 0) != round(ts_clean, 0))
+  cat("Outlier yang dibersihkan:", n_outlier, "titik\n")
+ 
+ 
+  # -- Box-Cox: cari lambda optimal (stabilkan varians) --
+  lambda <- BoxCox.lambda(ts_clean)
+  cat("Lambda Box-Cox:", round(lambda, 4), "\n")
+  ts_bc <- BoxCox(ts_clean, lambda)
+ 
+ 
+  # -- Uji Stasioneritas Awal --
+  cat("\n[Stasioneritas - Sebelum Differencing]\n")
+  adf1  <- adf.test(ts_bc)$p.value
+  kpss1 <- suppressWarnings(kpss.test(ts_bc)$p.value)
+  cat("ADF  p-value:", round(adf1,  4), ifelse(adf1  < 0.05, "-> Stasioner", "-> Tidak Stasioner"), "\n")
+  cat("KPSS p-value:", round(kpss1, 4), ifelse(kpss1 > 0.05, "-> Stasioner", "-> Tidak Stasioner"), "\n")
+ 
+ 
+  # -- Differencing Iteratif sampai Stasioner --
+  ts_work <- ts_bc
+  d_order <- 0
+  repeat {
+    ap <- adf.test(ts_work)$p.value
+    kp <- suppressWarnings(kpss.test(ts_work)$p.value)
+    if ((ap < 0.05 && kp > 0.05) || d_order >= 2) break
+    ts_work <- diff(ts_work)
+    d_order <- d_order + 1
+  }
+  cat("Orde differencing (d):", d_order, "\n")
+ 
+  if (d_order > 0) {
+    cat("\n[Stasioneritas - Setelah Differencing ke-", d_order, "]\n")
+    cat("ADF  p-value:", round(adf.test(ts_work)$p.value, 4), "\n")
+    cat("KPSS p-value:", round(suppressWarnings(kpss.test(ts_work)$p.value), 4), "\n")
+  }
+ 
+ 
+  # -- Plot ACF & PACF --
+  par(mfrow = c(1, 2))
+  acf(ts_work,  main = paste("ACF -", prov))
+  pacf(ts_work, main = paste("PACF -", prov))
+  par(mfrow = c(1, 1))
+ 
+ 
+  # -- Fit Model ARIMA (lambda dimasukkan agar forecast balik ke skala asli) --
+  model <- auto.arima(ts_clean, d = d_order, lambda = lambda,
+                      stepwise = FALSE, approximation = FALSE,
+                      ic = "aic", trace = FALSE)
+  cat("\n[Model Terpilih]\n")
+  print(summary(model))
+ 
+ 
+  # -- Diagnostik Residual --
+  resid <- residuals(model)
+  lb    <- Box.test(resid, lag = 10, type = "Ljung-Box")
+  sw    <- shapiro.test(resid)
+  cat("\nLjung-Box    p-value:", round(lb$p.value, 4),
+      ifelse(lb$p.value > 0.05, "-> Residual OK", "-> Ada autokorelasi"), "\n")
+  cat("Shapiro-Wilk p-value:", round(sw$p.value, 4),
+      ifelse(sw$p.value > 0.05, "-> Normal", "-> Tidak Normal"), "\n")
+  checkresiduals(model)
+ 
+ 
+  # -- Forecast 2026-2030 (otomatis balik ke skala asli via lambda) --
+  fc    <- forecast(model, h = 5, level = c(80, 95))
+  fc_df <- data.frame(
+    Tahun    = 2026:2030,
+    Forecast = round(as.numeric(fc$mean),         0),
+    Lo_80    = round(as.numeric(fc$lower[, 1]),   0),
+    Hi_80    = round(as.numeric(fc$upper[, 1]),   0),
+    Lo_95    = round(as.numeric(fc$lower[, 2]),   0),
+    Hi_95    = round(as.numeric(fc$upper[, 2]),   0)
+  )
+  cat("\n[Forecast 2026-2030 -", prov, "]\n")
+  print(fc_df)
+ 
+ 
+  # -- Plot Forecast --
+  p <- autoplot(fc) +
+    labs(title    = paste0("Forecast ARIMA(",
+                           paste(arimaorder(model), collapse = ","),
+                           ") - ", prov),
+         subtitle = paste("Variabel:", VAR, "| BoxCox lambda =", round(lambda, 3)),
+         x = "Tahun", y = VAR) +
+    theme_minimal()
+  print(p)
+ 
+ 
+  return(list(provinsi = prov,
+              order    = arimaorder(model),
+              lambda   = round(lambda, 4),
+              AIC      = round(AIC(model), 2),
+              RMSE     = round(accuracy(model)[, "RMSE"], 2),
+              MAPE     = round(accuracy(model)[, "MAPE"], 4),
+              LB_p     = round(lb$p.value, 4),
+              SW_p     = round(sw$p.value, 4),
+              forecast = fc_df))
+}
+ 
+ 
+# ---- JALANKAN SEMUA PROVINSI ----
+hasil <- lapply(unique(df$Provinsi), run_arima)
+names(hasil) <- unique(df$Provinsi)
+ 
+ 
+# ---- RINGKASAN ----
+cat("\n\n==============================\n")
+cat("  RINGKASAN SEMUA PROVINSI\n")
+cat("==============================\n")
+ 
+ringkasan <- do.call(rbind, lapply(hasil, function(x) {
+  data.frame(Provinsi = x$provinsi,
+             p = x$order[1], d = x$order[2], q = x$order[3],
+             Lambda = x$lambda,
+             AIC  = x$AIC, RMSE = x$RMSE, MAPE = x$MAPE,
+             LB_p = x$LB_p, SW_p = x$SW_p)
+}))
+print(ringkasan)
+```
+
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
+
+```{r}
+
+```
