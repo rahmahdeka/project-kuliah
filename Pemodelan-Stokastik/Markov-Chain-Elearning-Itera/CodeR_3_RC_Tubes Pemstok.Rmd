@@ -1,0 +1,240 @@
+---
+title: "Kode Tubes Pemstok : PEMODELAN RANTAI MARKOV PADA DINAMIKA JUMLAH PENGGUNA AKTIF HARIAN E-LEARNING ITERA PERIODE SEMESTER GANJIL 2025"
+author: "Kelompok 3"
+date: "RC"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+## 1. Eksplorasi Data
+
+```{r}
+
+
+# 1. LOAD LIBRARY
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(tidyr)
+
+# 2. IMPORT DAN PREPROCESSING DATA
+library(readxl)
+
+data <- read_excel("C:/Users/Lenovo/Documents/data_tubes_pemstok.xlsx")
+# Mengatur format tanggal (Asumsi data dimulai 2025-08-01)
+data <- data %>%
+  mutate(date = as.Date("2025-08-01") + as.numeric(nth_day))
+
+head (data,243)
+```
+
+## 2. Preprocesing Data
+
+```{r}
+# --- FILTER RENTANG TANGGAL ---
+# Menentukan rentang tanggal analisis
+tgl_mulai <- as.Date("2025-08-24")
+tgl_selesai <- as.Date("2025-12-26")
+
+# Memfilter data
+data <- data %>%
+  filter(date >= tgl_mulai & date <= tgl_selesai)
+
+# Pastikan data tidak kosong
+print(paste("Jumlah data setelah difilter:", nrow(data), "hari"))
+
+summary(data$dau)
+sqrt(var(data$dau))
+```
+
+```{r}
+tail(data,3)
+
+```
+
+## 3. Analisis Data
+
+```{r}
+# 3. VISUALISASI AWAL (TIME SERIES)
+data_long <- data %>%
+  pivot_longer(cols = c(dau),
+               names_to = "type",
+               values_to = "value")
+
+ggplot(data_long, aes(x = date, y = value, color = type)) +
+  geom_line(size = 1) +
+  labs(title = "Time Series Daily Activities User E-Learning ITERA",
+       x = "Tanggal", y = "Jumlah Pengguna", color = "Metrik") +
+  theme_minimal()
+```
+
+```{r}
+# 4. PENENTUAN STATE MENGGUNAKAN DISKRETISASI 3 KATEGORI
+# Metode: IQR (berbasis kuartil)
+
+# Menghitung kuartil
+Q1 <- quantile(data$dau, 0.25, na.rm = TRUE)
+Q2 <- quantile(data$dau, 0.50, na.rm = TRUE)  # median
+Q3 <- quantile(data$dau, 0.75, na.rm = TRUE)
+
+# Membuat batas kelas (3 kategori)
+batas <- c(
+  min(data$dau, na.rm = TRUE),
+  Q1,
+  Q3,
+  max(data$dau, na.rm = TRUE)
+)
+
+# Menentukan state berdasarkan IQR
+data <- data %>%
+  mutate(
+    state = cut(
+      dau,
+      breaks = batas,
+      include.lowest = TRUE,
+      labels = c(1, 2, 3)
+    ),
+    state = as.numeric(as.character(state))
+  )
+
+# Menambahkan definisi state
+data <- data %>%
+  mutate(
+    state_definition = case_when(
+      state == 1 ~ "Trafik Rendah",
+      state == 2 ~ "Trafik Sedang",
+      state == 3 ~ "Trafik Padat"
+    )
+  )
+
+# Melihat hasil
+head(data)
+table(data$state_definition)
+```
+
+```{r}
+# 5. CEK RENTANG NILAI TIAP STATE (Threshold Data)
+summary_state <- data %>%
+  group_by(state, state_definition) %>%
+  summarise(Min_User = min(dau), 
+            Max_User = max(dau), 
+            Jumlah_Hari = n(),
+            .groups = 'drop')
+print("--- Ringkasan Threshold State  ---")
+print(summary_state)
+```
+
+```{r}
+# 5. MEMBENTUK TRANSISI ANTAR STATE
+
+# Membuat state hari berikutnya
+data <- data %>%
+  mutate(next_state = lead(state))
+
+# Menghapus baris terakhir (karena next_state = NA)
+transisi <- data %>%
+  filter(!is.na(next_state))
+
+# Membentuk matriks frekuensi transisi
+F_ij <- table(transisi$state, transisi$next_state)
+
+# Mengubah ke matrix
+F_ij <- as.matrix(F_ij)
+
+# Menambahkan nama baris dan kolom
+rownames(F_ij) <- c("Rendah", "Sedang", "Padat")
+colnames(F_ij) <- c("Rendah", "Sedang", "Padat")
+
+# Menampilkan matriks frekuensi transisi
+cat("=== Matriks Frekuensi Transisi ===\n")
+print(F_ij)
+```
+
+```{r}
+# 6. MATRKS PELUANG TRANSISI
+
+# Membagi setiap baris dengan jumlah total baris
+P_manual <- prop.table(F_ij, margin = 1)
+
+# Menampilkan matriks peluang transisi
+cat("=== Matriks Peluang Transisi ===\n")
+print(round(P_manual, 4))
+```
+
+```{r}
+# 6. VISUALISASI HASIL 
+ggplot(data, aes(x = date, y = dau, color = as.factor(state_definition))) +
+  geom_line(aes(group = 1), color = "black", alpha = 0.6) +
+  geom_point(alpha = 0.7, size = 2) +
+  scale_color_manual(values = c("red", "green", "orange")) +
+  labs(title = "Klasifikasi State Beban Server",
+       x = "Tanggal", y = "Daily Active Users (DAU)", color = "Status Server") +
+  theme_minimal()
+```
+
+```{r}
+head (data,125)
+```
+
+```{r}
+library(DiagrammeR)
+
+edges <- ""
+states <- rownames(P_manual)
+
+for (i in 1:nrow(P_manual)) {
+  for (j in 1:ncol(P_manual)) {
+
+    val <- P_manual[i, j]
+
+    if (val > 0) {
+
+      prob <- sprintf("%.4f", val)
+
+      edges <- paste0(
+        edges,
+        states[i], " -> ", states[j],
+        " [label = '", prob,
+        "', color='black', fontcolor='black']\n"
+      )
+    }
+  }
+}
+
+graph_code <- paste0("
+digraph markov_chain {
+
+  rankdir=LR;
+
+  node [
+    shape = circle,
+    style = filled,
+    fillcolor = red,
+    color = navy,
+    fontcolor = black,
+    fontsize = 14
+  ];
+
+", edges, "}
+")
+
+grViz(graph_code)
+
+```
+
+```{r}
+# 8. ANALISIS DISTRIBUSI STASIONER (STEADY STATE) MANUAL
+# Mencari Eigenvector dari transpose matriks P
+eigen_deck <- eigen(t(P_manual))
+
+# Mengambil eigenvector yang bersesuaian dengan eigenvalue 1 (biasanya kolom pertama)
+steady_state <- as.numeric(eigen_deck$vectors[,1] / sum(eigen_deck$vectors[,1]))
+
+# Membersihkan hasil (mengambil nilai riil dan absolut)
+steady_state <- abs(Re(steady_state))
+
+names(steady_state) <- c("pi_1", "pi_2)", "pi_3)")
+print("--- Distribusi Stasioner (Steady State) ---")
+print(round(steady_state, 4))
+```
