@@ -1,6 +1,6 @@
 ---
 title: "Untitled"
-author: "Vita Anggraini"
+author: "Kelompok_5_ADW_RC"
 date: "2026-05-12"
 output: html_document
 ---
@@ -154,54 +154,4 @@ print(ringkasan)
 ```
 
 
-```{r}
 
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
-
-```{r}
-
-```
